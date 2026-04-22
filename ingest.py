@@ -1,3 +1,42 @@
+# [현재 상태]
+# - markdown → section → chunk로 분리 후 text 기반 indexing 완료
+# - OpenSearch Docker 환경 (HTTPS + security)
+# - embedding 모델(all-MiniLM-L6-v2, dim=384) 등록 완료, model_id 확보
+
+# [모델 관련 이해]
+# - model_id는 OpenSearch 내부 ID (HF 이름 아님)
+# - 모델은 내부적으로 여러 chunk 문서로 저장되므로 여러 개처럼 보이지만 실제는 1개
+# - 대표 문서( suffix 없는 model_id )만 사용하면 됨
+
+# [Day 3 구현]
+# 1. embedding 입력 필드 추가
+#    text_for_embedding = title + section_title + text
+#    (semantic 성능 향상을 위해 context 포함)
+
+# 2. 새 index 생성 (기존 index 수정 X)
+#    - index.knn = true
+#    - embedding 필드 추가:
+#      knn_vector, dimension=384 (모델과 반드시 일치)
+
+# 3. ingest pipeline 구성
+#    - text_embedding processor 사용
+#    - text_for_embedding → embedding 자동 생성
+
+# 4. bulk indexing 유지
+#    - 기존 코드 그대로 사용 가능
+#    - ingest pipeline이 embedding 생성 담당
+
+# [검색 구현]
+# - lexical: multi_match (title^2, section_title, text)
+# - vector: neural query (model_id 사용)
+# - 두 결과 비교하여 retrieval 품질 확인
+
+# [주의사항]
+# - model_id는 ingest/search에서 동일하게 사용
+# - dimension mismatch 시 indexing 실패
+# - 기존 index 대신 새 index 생성 권장
+
+
 import os
 import re
 import hashlib
@@ -25,7 +64,9 @@ def create_index(client: OpenSearch, index_name: str) -> None:
         "settings": {
             "index": {
                 "number_of_shards": 1,
-                "number_of_replicas": 0
+                "number_of_replicas": 0,
+                "knn": True,
+                "default_pipeline": "chunk-embedding-pipeline"
             }
         },
         "mappings": {
@@ -41,9 +82,20 @@ def create_index(client: OpenSearch, index_name: str) -> None:
                 "source": {"type": "keyword"},
                 "url": {"type": "keyword"},
                 "text": {"type": "text"},
+                "text_for_embedding": {"type": "text"},
                 "section_title": {"type": "text"},
                 "char_length": {"type": "integer"},
                 "word_count": {"type": "integer"},
+                "embedding": {
+                    "type": "knn_vector",
+                    "dimension": 384,
+                    "method": {
+                        "name": "hnsw",
+                        "engine": "lucene",
+                        "space_type": "cosinesimil",
+                        "parameters": {}
+                    }
+                }
             }
         }
     }
@@ -51,6 +103,32 @@ def create_index(client: OpenSearch, index_name: str) -> None:
     client.indices.create(index=index_name, body=mapping)
     print(f"[INFO] Created index: {index_name}")
 
+def create_ingest_pipeline(client: OpenSearch, model_id: str) -> None:
+    body = {
+        "description": "Generate embeddings for markdown chunks",
+        "processors": [
+            {
+                "text_embedding": {
+                    "model_id": model_id,
+                    "field_map": {
+                        "text_for_embedding": "embedding"
+                    }
+                }
+            }
+        ]
+    }
+    client.ingest.put_pipeline(id="chunk-embedding-pipeline", body=body)
+    print("[INFO] Created ingest pipeline: chunk-embedding-pipeline")
+
+def build_text_for_embedding(title: str, section_title: str, text: str) -> str:
+    parts = []
+    if title:
+        parts.append(f"Title: {title}")
+    if section_title:
+        parts.append(f"Section: {section_title}")
+    if text:
+        parts.append(text)
+    return "\n".join(parts).strip()
 
 def normalize_whitespace(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -176,6 +254,7 @@ def build_chunks_from_document(
                 "text": chunk_text,
                 "char_length": len(chunk_text),
                 "word_count": len(chunk_text.split()),
+                "text_for_embedding": build_text_for_embedding(title, section_title, chunk_text),
             })
             chunk_idx += 1
 
@@ -194,6 +273,11 @@ def generate_actions(index_name: str, rows: Iterable[Dict]) -> Iterable[Dict]:
 
 def main():
     client = get_client()
+    model_id = os.getenv("EMBEDDING_MODEL_ID")
+    if not model_id:
+        raise ValueError("EMBEDDING_MODEL_ID is required")
+    
+    create_ingest_pipeline(client, model_id)
     create_index(client, INDEX_NAME)
 
     print("[INFO] Loading dataset from Hugging Face...")
