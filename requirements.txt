@@ -1,0 +1,5 @@
+opensearch-py==2.5.0
+datasets==2.19.1
+streamlit==1.44.1
+python-dotenv==1.0.1
+tqdm==4.66.4

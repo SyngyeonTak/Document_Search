@@ -1,0 +1,62 @@
+** Day 1
+Docker로 OpenSearch 띄움
+데이터셋 적재 후보 확보
+Streamlit 기본 검색 UI 완성
+여기까지면 아주 좋습니다.
+
+** Day 2
+Lexical 검색부터 고정
+인덱스 설계
+mapping
+BM25 검색
+filter(category/date/source)
+여기서 먼저 “검색기”를 만드셔야 합니다.
+vector를 먼저 붙이면 baseline이 약해서 비교가 잘 안 됩니다.
+
+** Day 3
+Embedding + vector search
+text field 정리
+embedding 생성
+vector field 추가
+k-NN/semantic search 구현
+
+** Day 4
+Hybrid search
+BM25 + vector 병렬
+score 조합 또는 search pipeline
+쿼리별로 lexical이 이기는 경우 / vector가 이기는 경우 비교
+OpenSearch는 hybrid search와 relevance 관련 기능을 공식적으로 강조하고 있고, search configuration / search pipeline을 실험에 활용할 수 있습니다.
+
+** Day 5
+RAG
+top-k retrieval
+context assembly
+LLM answer
+source citation
+hallucination 방지용 “근거 없으면 모른다고 답하기”
+
+** Day 6
+Enterprise 메타데이터 / 권한
+tenant_id
+role
+doc_type
+source_system
+created_at
+acl_tags
+그리고 retrieval 전에 필터를 강제하는 구조로 가십시오. OpenSearch는 Security, document-level/field-level 제어, 감사 기능을 지원하므로 엔터프라이즈 설계를 연습하기 좋습니다.
+
+** Day 7
+Agent 형태로 확장
+검색 tool
+요약 tool
+compare tool
+“질문 → 검색 → 부족하면 재검색 → 답변” 한 단계 루프
+OpenSearch 쪽에서도 agentic workflows와 ML Commons agents/tools를 지원하는 흐름이 강조되고 있습니다.
+
+** Day 8
+운영 관점 마무리
+로그 인덱스
+query latency 측정
+relevance 테스트셋 20~30개 수동 작성
+실패 케이스 정리
+README / 아키텍처 문서화
