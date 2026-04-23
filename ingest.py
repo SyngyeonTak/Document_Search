@@ -120,6 +120,13 @@ def create_ingest_pipeline(client: OpenSearch, model_id: str) -> None:
     client.ingest.put_pipeline(id="chunk-embedding-pipeline", body=body)
     print("[INFO] Created ingest pipeline: chunk-embedding-pipeline")
 
+def deploy_model(client: OpenSearch, model_id: str) -> None:
+    client.transport.perform_request(
+        method="POST",
+        url=f"/_plugins/_ml/models/{model_id}/_deploy"
+    )
+    print(f"[INFO] Deploy requested for model: {model_id}")
+
 def build_text_for_embedding(title: str, section_title: str, text: str) -> str:
     parts = []
     if title:
@@ -278,8 +285,9 @@ def main():
         raise ValueError("EMBEDDING_MODEL_ID is required")
     
     create_ingest_pipeline(client, model_id)
+    deploy_model(client, model_id)
     create_index(client, INDEX_NAME)
-
+    
     print("[INFO] Loading dataset from Hugging Face...")
     dataset = load_dataset("philschmid/markdown-documentation-transformers")
 

@@ -1,102 +1,98 @@
-import os
-from dotenv import load_dotenv
 import pandas as pd
 import streamlit as st
+
 from opensearch_client import get_client
+from search.retriever.retrieval import get_source_terms
+from search.retriever.service import get_search_service
 
-load_dotenv()
 
-INDEX_NAME = os.getenv("OPENSEARCH_INDEX", "hf_markdown_docs")
+@st.cache_resource
+def get_cached_client():
+    return get_client()
+
+
+@st.cache_resource
+def get_cached_search_service():
+    client = get_cached_client()
+    return get_search_service(client)
+
 
 @st.cache_data
-def search_docs(_client, query: str, size: int = 10, source_filter: str = ""):
-    must_clauses = []
-    filter_clauses = []
+def cached_get_source_terms():
+    client = get_cached_client()
+    return get_source_terms(client)
 
-    if query.strip():
-        must_clauses.append({
-            "multi_match": {
-                "query": query,
-                "fields": ["title^2", "section_title^1.5", "text"],
-                "type": "best_fields"
-            }
-        })
-    else:
-        must_clauses.append({"match_all": {}})
 
+@st.cache_data
+def cached_run_search(mode: str, query: str, size: int, source_filter: str):
+    service = get_cached_search_service()
+
+    filters = {}
     if source_filter and source_filter != "ALL":
-        filter_clauses.append({"term": {"source": source_filter}})
+        filters["source"] = source_filter
 
-    body = {
-        "size": size,
-        "_source": [
-            "title", "source", "url", "section_title",
-            "text", "chunk_id", "char_length", "word_count"
-        ],
-        "query": {
-            "bool": {
-                "must": must_clauses,
-                "filter": filter_clauses
-            }
-        },
-        "highlight": {
-            "fields": {
-                "text": {},
-                "title": {},
-                "section_title": {}
-            }
-        }
-    }
-
-    resp = _client.search(index=INDEX_NAME, body=body)
-    hits = resp["hits"]["hits"]
-
-    rows = []
-    for hit in hits:
-        src = hit["_source"]
-        rows.append({
-            "score": hit["_score"],
-            "title": src.get("title", ""),
-            "source": src.get("source", ""),
-            "url": src.get("url", ""),
-            "section_title": src.get("section_title", ""),
-            "chunk_id": src.get("chunk_id", ""),
-            "text": src.get("text", ""),
-            "highlight": hit.get("highlight", {}).get("text", []),
-        })
-    return rows
+    return service.search(
+        mode=mode,
+        query=query,
+        top_k=size,
+        filters=filters,
+    )
 
 
-def get_source_terms(client):
-    body = {
-        "size": 0,
-        "aggs": {
-            "sources": {
-                "terms": {
-                    "field": "source",
-                    "size": 50
-                }
-            }
-        }
-    }
-    resp = client.search(index=INDEX_NAME, body=body)
-    buckets = resp["aggregations"]["sources"]["buckets"]
-    return ["ALL"] + [b["key"] for b in buckets]
+def render_results(results, title: str):
+    st.subheader(f"{title} ({len(results)}건)")
+
+    for i, row in enumerate(results, start=1):
+        with st.container(border=True):
+            st.markdown(f"### {i}. {row.title or ''}")
+            st.write(f"**score**: {(row.score or 0.0):.3f}")
+            st.write(f"**source**: {row.source or ''}")
+
+            if row.section_title:
+                st.write(f"**section**: {row.section_title}")
+
+            if row.url:
+                st.markdown(f"**url**: {row.url}")
+
+            if row.retrieval_method:
+                st.write(f"**method**: {row.retrieval_method}")
+
+            if getattr(row, "highlight", None):
+                st.markdown("**highlight**")
+                for h in (row.highlight or []):
+                    st.markdown(h, unsafe_allow_html=True)
+
+            st.markdown("**chunk text**")
+            st.code((row.text or "")[:1500], language="markdown")
 
 
 def main():
-    st.set_page_config(page_title="OpenSearch Markdown Docs Search", layout="wide")
-    st.title("OpenSearch Markdown Documentation Search")
-    st.caption("Hugging Face markdown docs + markdown-aware chunking + BM25 search")
-
-    client = get_client()
+    st.set_page_config(page_title="OpenSearch Retrieval Playground", layout="wide")
+    st.title("OpenSearch Retrieval Playground")
+    st.caption("BM25 / Vector / Hybrid 검색 비교")
 
     with st.sidebar:
         st.header("검색 옵션")
+
+        run_mode = st.radio(
+            "실행 방식",
+            options=["single", "compare"],
+            format_func=lambda x: "단일 검색" if x == "single" else "3개 방식 비교",
+        )
+
+        search_mode = "bm25"
+        if run_mode == "single":
+            search_mode = st.selectbox(
+                "검색 방식",
+                options=["bm25", "vector", "hybrid"],
+                index=0,
+            )
+
         try:
-            source_options = get_source_terms(client)
+            source_options = cached_get_source_terms()
         except Exception:
             source_options = ["ALL"]
+
         source_filter = st.selectbox("Source", source_options, index=0)
         size = st.slider("Top K", 3, 30, 10)
 
@@ -104,27 +100,45 @@ def main():
 
     if st.button("검색"):
         with st.spinner("검색 중..."):
-            results = search_docs(client, query=query, size=size, source_filter=source_filter)
+            if run_mode == "single":
+                results = cached_run_search(
+                    mode=search_mode,
+                    query=query,
+                    size=size,
+                    source_filter=source_filter,
+                )
+                render_results(results, f"{search_mode.upper()} 결과")
 
-        st.subheader(f"검색 결과: {len(results)}건")
+            else:
+                bm25_results = cached_run_search(
+                    mode="bm25",
+                    query=query,
+                    size=size,
+                    source_filter=source_filter,
+                )
+                vector_results = cached_run_search(
+                    mode="vector",
+                    query=query,
+                    size=size,
+                    source_filter=source_filter,
+                )
+                hybrid_results = cached_run_search(
+                    mode="hybrid",
+                    query=query,
+                    size=size,
+                    source_filter=source_filter,
+                )
 
-        for i, row in enumerate(results, start=1):
-            with st.container(border=True):
-                st.markdown(f"### {i}. {row['title']}")
-                st.write(f"**score**: {row['score']:.3f}")
-                st.write(f"**source**: {row['source']}")
-                if row["section_title"]:
-                    st.write(f"**section**: {row['section_title']}")
-                if row["url"]:
-                    st.markdown(f"**url**: {row['url']}")
+                tab1, tab2, tab3 = st.tabs(["BM25", "Vector", "Hybrid"])
 
-                if row["highlight"]:
-                    st.markdown("**highlight**")
-                    for h in row["highlight"]:
-                        st.markdown(h, unsafe_allow_html=True)
+                with tab1:
+                    render_results(bm25_results, "BM25 결과")
 
-                st.markdown("**chunk text**")
-                st.code(row["text"][:1500], language="markdown")
+                with tab2:
+                    render_results(vector_results, "Vector 결과")
+
+                with tab3:
+                    render_results(hybrid_results, "Hybrid 결과")
 
     st.divider()
     st.subheader("샘플 질의")
@@ -133,7 +147,7 @@ def main():
         "How to tokenize text",
         "Trainer usage example",
         "Pipeline for text generation",
-        "dataset loading"
+        "dataset loading",
     ]
     st.write(pd.DataFrame({"sample_queries": sample_queries}))
 
